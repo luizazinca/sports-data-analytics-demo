@@ -95,7 +95,7 @@ jobs:
         env:
           FUNCTION_NAME: ${{ matrix.lambda_name }}
           S3_BUCKET: ${{ secrets.S3_BUCKET }}
-          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_REGION: eu-north-1
         run: |
           aws lambda update-function-configuration \
             --function-name "$FUNCTION_NAME" \
