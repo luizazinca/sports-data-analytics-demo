@@ -44,7 +44,7 @@ jobs:
       - name: Build and push Docker image
         id: build-image
         env:
-          ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
+          ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.eu-north-1.amazonaws.com
           ECR_REPOSITORY: ${{ matrix.ecr_repo }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
