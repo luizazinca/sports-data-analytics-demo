@@ -36,7 +36,7 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          aws-region: eu-north-1
 
       - name: Log in to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
@@ -48,6 +48,7 @@ jobs:
           ECR_REPOSITORY: ${{ matrix.ecr_repo }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
+          set -e
           IMAGE_URI="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
           IMAGE_URI_LATEST="$ECR_REGISTRY/$ECR_REPOSITORY:latest"
 
@@ -57,6 +58,7 @@ jobs:
             -t "$IMAGE_URI_LATEST" \
             "${{ matrix.context_dir }}"
 
+          echo "Pushing $IMAGE_URI and $IMAGE_URI_LATEST"
           docker push "$IMAGE_URI"
           docker push "$IMAGE_URI_LATEST"
 
@@ -68,6 +70,7 @@ jobs:
           IMAGE_URI: ${{ steps.build-image.outputs.image_uri }}
           ROLE_ARN: ${{ secrets.LAMBDA_EXEC_ROLE_ARN }}
         run: |
+          set -e
           if aws lambda get-function --function-name "$FUNCTION_NAME" >/dev/null 2>&1; then
             echo "Lambda exists. Updating image..."
             aws lambda update-function-code \
@@ -89,22 +92,42 @@ jobs:
         env:
           FUNCTION_NAME: ${{ matrix.lambda_name }}
         run: |
+          # The waiter can return slightly before config updates are allowed, so we also add a short settle time.
           aws lambda wait function-updated --function-name "$FUNCTION_NAME" || true
+          sleep 10
 
-      - name: Update Lambda configuration (env vars, timeout, memory)
+      - name: Update Lambda configuration (env vars, timeout, memory) with retry
         env:
           FUNCTION_NAME: ${{ matrix.lambda_name }}
           S3_BUCKET: ${{ secrets.S3_BUCKET }}
           AWS_REGION: eu-north-1
         run: |
-          aws lambda update-function-configuration \
-            --function-name "$FUNCTION_NAME" \
-            --timeout ${{ matrix.timeout }} \
-            --memory-size ${{ matrix.memory }} \
-            --environment "Variables={S3_BUCKET=$S3_BUCKET,AWS_REGION=$AWS_REGION,BRONZE_PREFIX=bronze,SILVER_PREFIX=silver,GOLD_PREDICTIONS_PREFIX=gold/predictions,GOLD_METRICS_PREFIX=gold/metrics,GOLD_LATEST_PREFIX=gold/latest}"
+          set -e
+          echo "Updating configuration for $FUNCTION_NAME (retrying if update still in progress)..."
+
+          for i in 1 2 3 4 5 6; do
+            if aws lambda update-function-configuration \
+              --function-name "$FUNCTION_NAME" \
+              --timeout ${{ matrix.timeout }} \
+              --memory-size ${{ matrix.memory }} \
+              --environment "Variables={S3_BUCKET=$S3_BUCKET,AWS_REGION=$AWS_REGION,BRONZE_PREFIX=bronze,SILVER_PREFIX=silver,GOLD_PREDICTIONS_PREFIX=gold/predictions,GOLD_METRICS_PREFIX=gold/metrics,GOLD_LATEST_PREFIX=gold/latest}"
+            then
+              echo "Config update succeeded on attempt $i"
+              exit 0
+            else
+              echo "Config update failed on attempt $i. Waiting 10s and retrying..."
+              sleep 10
+            fi
+          done
+
+          echo "Config update failed after retries"
+          exit 1
 
       - name: Print deployed Lambda summary
         env:
           FUNCTION_NAME: ${{ matrix.lambda_name }}
         run: |
-          aws lambda get-function --function-name "$FUNCTION_NAME" --query 'Configuration.[FunctionName,PackageType,State,Timeout,MemorySize]' --output table
+          aws lambda get-function \
+            --function-name "$FUNCTION_NAME" \
+            --query 'Configuration.[FunctionName,PackageType,State,Timeout,MemorySize]' \
+            --output table
